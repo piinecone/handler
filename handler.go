@@ -2,10 +2,15 @@ package handler
 
 import (
 	"encoding/json"
+	//"fmt"
+	//"github.com/kylelemons/godebug/pretty"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
+	//"strconv"
 	"strings"
+	"time"
 
 	"github.com/graphql-go/graphql"
 
@@ -20,7 +25,7 @@ const (
 
 type Handler struct {
 	Schema *graphql.Schema
-	
+
 	pretty bool
 }
 type RequestOptions struct {
@@ -116,6 +121,8 @@ func NewRequestOptions(r *http.Request) *RequestOptions {
 // ContextHandler provides an entrypoint into executing graphQL queries with a
 // user-provided context.
 func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	// get query
 	opts := NewRequestOptions(r)
 
@@ -134,7 +141,6 @@ func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *
 	}
 	result := graphql.Do(params)
 
-	
 	if h.pretty {
 		w.WriteHeader(http.StatusOK)
 		buff, _ := json.MarshalIndent(result, "", "\t")
@@ -143,8 +149,18 @@ func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *
 	} else {
 		w.WriteHeader(http.StatusOK)
 		buff, _ := json.Marshal(result)
-	
+
 		w.Write(buff)
+	}
+
+	elapsed := time.Since(start)
+	if (elapsed / time.Millisecond) > 200 {
+		lines := strings.Split(params.RequestString, "\n")
+		log.Println("------------------ slow response -------------------")
+		log.Println("response time: ", elapsed)
+		for _, line := range lines {
+			log.Println(line)
+		}
 	}
 }
 
