@@ -2,13 +2,18 @@ package handler
 
 import (
 	"encoding/json"
+	//"fmt"
+	//"github.com/kylelemons/godebug/pretty"
 	"io/ioutil"
+	"log"
 	"net/http"
+	"net/url"
+	//"strconv"
 	"strings"
+	"time"
 
-	"github.com/gorilla/schema"
 	"github.com/graphql-go/graphql"
-	"github.com/unrolled/render"
+
 	"golang.org/x/net/context"
 )
 
@@ -18,11 +23,11 @@ const (
 	ContentTypeFormURLEncoded = "application/x-www-form-urlencoded"
 )
 
-var decoder = schema.NewDecoder()
-
 type Handler struct {
 	Schema *graphql.Schema
-	render *render.Render
+
+	pretty           bool
+	logSlowResponses bool
 }
 type RequestOptions struct {
 	Query         string                 `json:"query" url:"query" schema:"query"`
@@ -37,26 +42,34 @@ type requestOptionsCompatibility struct {
 	OperationName string `json:"operationName" url:"operationName" schema:"operationName"`
 }
 
-// RequestOptions Parses a http.Request into GraphQL request options struct
-func NewRequestOptions(r *http.Request) *RequestOptions {
-
-	query := r.URL.Query().Get("query")
+func getFromForm(values url.Values) *RequestOptions {
+	query := values.Get("query")
 	if query != "" {
-
 		// get variables map
 		var variables map[string]interface{}
-		variablesStr := r.URL.Query().Get("variables")
+		variablesStr := values.Get("variables")
 		json.Unmarshal([]byte(variablesStr), variables)
 
 		return &RequestOptions{
 			Query:         query,
 			Variables:     variables,
-			OperationName: r.URL.Query().Get("operationName"),
+			OperationName: values.Get("operationName"),
 		}
 	}
+
+	return nil
+}
+
+// RequestOptions Parses a http.Request into GraphQL request options struct
+func NewRequestOptions(r *http.Request) *RequestOptions {
+	if reqOpt := getFromForm(r.URL.Query()); reqOpt != nil {
+		return reqOpt
+	}
+
 	if r.Method != "POST" {
 		return &RequestOptions{}
 	}
+
 	if r.Body == nil {
 		return &RequestOptions{}
 	}
@@ -76,16 +89,16 @@ func NewRequestOptions(r *http.Request) *RequestOptions {
 			Query: string(body),
 		}
 	case ContentTypeFormURLEncoded:
-		var opts RequestOptions
-		err := r.ParseForm()
-		if err != nil {
+		if err := r.ParseForm(); err != nil {
 			return &RequestOptions{}
 		}
-		err = decoder.Decode(&opts, r.PostForm)
-		if err != nil {
-			return &RequestOptions{}
+
+		if reqOpt := getFromForm(r.PostForm); reqOpt != nil {
+			return reqOpt
 		}
-		return &opts
+
+		return &RequestOptions{}
+
 	case ContentTypeJSON:
 		fallthrough
 	default:
@@ -109,6 +122,8 @@ func NewRequestOptions(r *http.Request) *RequestOptions {
 // ContextHandler provides an entrypoint into executing graphQL queries with a
 // user-provided context.
 func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	// get query
 	opts := NewRequestOptions(r)
 
@@ -127,8 +142,27 @@ func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *
 	}
 	result := graphql.Do(params)
 
-	// render result
-	h.render.JSON(w, http.StatusOK, result)
+	if h.pretty {
+		w.WriteHeader(http.StatusOK)
+		buff, _ := json.MarshalIndent(result, "", "\t")
+
+		w.Write(buff)
+	} else {
+		w.WriteHeader(http.StatusOK)
+		buff, _ := json.Marshal(result)
+
+		w.Write(buff)
+	}
+
+	elapsed := time.Since(start)
+	if h.logSlowResponses && (elapsed/time.Millisecond) > 200 {
+		lines := strings.Split(params.RequestString, "\n")
+		log.Println("------------------ slow response -------------------")
+		log.Println("response time: ", elapsed)
+		for _, line := range lines {
+			log.Println(line)
+		}
+	}
 }
 
 // ServeHTTP provides an entrypoint into executing graphQL queries.
@@ -137,14 +171,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type Config struct {
-	Schema *graphql.Schema
-	Pretty bool
+	Schema           *graphql.Schema
+	Pretty           bool
+	LogSlowResponses bool
 }
 
 func NewConfig() *Config {
 	return &Config{
-		Schema: nil,
-		Pretty: true,
+		Schema:           nil,
+		Pretty:           true,
+		LogSlowResponses: false,
 	}
 }
 
@@ -155,11 +191,10 @@ func New(p *Config) *Handler {
 	if p.Schema == nil {
 		panic("undefined GraphQL schema")
 	}
-	r := render.New(render.Options{
-		IndentJSON: p.Pretty,
-	})
+
 	return &Handler{
-		Schema: p.Schema,
-		render: r,
+		Schema:           p.Schema,
+		pretty:           p.Pretty,
+		logSlowResponses: p.LogSlowResponses,
 	}
 }
