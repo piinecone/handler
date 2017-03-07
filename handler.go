@@ -26,7 +26,8 @@ const (
 type Handler struct {
 	Schema *graphql.Schema
 
-	pretty bool
+	pretty           bool
+	logSlowResponses bool
 }
 type RequestOptions struct {
 	Query         string                 `json:"query" url:"query" schema:"query"`
@@ -154,7 +155,7 @@ func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *
 	}
 
 	elapsed := time.Since(start)
-	if (elapsed / time.Millisecond) > 200 {
+	if h.logSlowResponses && (elapsed/time.Millisecond) > 200 {
 		lines := strings.Split(params.RequestString, "\n")
 		log.Println("------------------ slow response -------------------")
 		log.Println("response time: ", elapsed)
@@ -170,14 +171,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type Config struct {
-	Schema *graphql.Schema
-	Pretty bool
+	Schema           *graphql.Schema
+	Pretty           bool
+	LogSlowResponses bool
 }
 
 func NewConfig() *Config {
 	return &Config{
-		Schema: nil,
-		Pretty: true,
+		Schema:           nil,
+		Pretty:           true,
+		LogSlowResponses: false,
 	}
 }
 
@@ -190,7 +193,8 @@ func New(p *Config) *Handler {
 	}
 
 	return &Handler{
-		Schema: p.Schema,
-		pretty: p.Pretty,
+		Schema:           p.Schema,
+		pretty:           p.Pretty,
+		logSlowResponses: p.LogSlowResponses,
 	}
 }
