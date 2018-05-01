@@ -1,19 +1,18 @@
 package handler
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
-	//"fmt"
-	//"github.com/kylelemons/godebug/pretty"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
-	//"strconv"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/graphql-go/graphql"
-
 	"golang.org/x/net/context"
 )
 
@@ -26,8 +25,9 @@ const (
 type Handler struct {
 	Schema *graphql.Schema
 
-	pretty           bool
-	logSlowResponses bool
+	Pretty             bool
+	LogSlowResponses   bool
+	ShowFullStackTrace bool
 }
 type RequestOptions struct {
 	Query         string                 `json:"query" url:"query" schema:"query"`
@@ -140,22 +140,54 @@ func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *
 		Context:        ctx,
 		RootObject:     root,
 	}
-	result := graphql.Do(params)
 
-	if h.pretty {
+	result := graphql.Do(params)
+	if result.HasErrors() {
+		for _, err := range result.Errors {
+			if h.ShowFullStackTrace {
+				log.Println(err)
+				log.Println(string(err.Stack))
+			} else {
+				var stack bytes.Buffer
+				stack.WriteString("\n\n|---------------------------------------------------------------------------\n")
+				stack.WriteString("|  graphql error\n")
+				stack.WriteString("|---------------------------------------------------------------------------\n")
+				stack.WriteString("|\n|  ")
+				stack.WriteString(err.Error())
+				stack.WriteString("\n|  ...\n")
+				scanner := bufio.NewScanner(bytes.NewReader(err.Stack))
+				dir, _ := os.Getwd()
+				for scanner.Scan() {
+					line := scanner.Text()
+					if strings.Contains(line, "graphql-go") {
+						continue
+					}
+					if strings.Contains(line, "runtime") {
+						continue
+					}
+					stack.WriteString("|  ")
+					stack.WriteString(strings.Replace(line, dir, "", -1))
+					stack.WriteString("\n")
+				}
+				stack.WriteString("|  ...\n")
+				stack.WriteString("|---------------------------------------------------------------------------\n")
+				log.Println(stack.String())
+			}
+		}
+	}
+
+	if h.Pretty {
 		w.WriteHeader(http.StatusOK)
 		buff, _ := json.MarshalIndent(result, "", "\t")
-
 		w.Write(buff)
 	} else {
 		w.WriteHeader(http.StatusOK)
 		buff, _ := json.Marshal(result)
-
 		w.Write(buff)
 	}
 
 	elapsed := time.Since(start)
-	if h.logSlowResponses && (elapsed/time.Millisecond) > 200 {
+	if h.LogSlowResponses && (elapsed/time.Millisecond) > 200 {
 		lines := strings.Split(params.RequestString, "\n")
 		log.Println("------------------ slow response -------------------")
 		log.Println("response time: ", elapsed)
@@ -171,16 +203,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type Config struct {
-	Schema           *graphql.Schema
-	Pretty           bool
-	LogSlowResponses bool
+	Schema             *graphql.Schema
+	Pretty             bool
+	LogSlowResponses   bool
+	ShowFullStackTrace bool
 }
 
 func NewConfig() *Config {
 	return &Config{
-		Schema:           nil,
-		Pretty:           true,
-		LogSlowResponses: false,
+		Schema:             nil,
+		Pretty:             true,
+		LogSlowResponses:   false,
+		ShowFullStackTrace: false,
 	}
 }
 
@@ -194,7 +228,7 @@ func New(p *Config) *Handler {
 
 	return &Handler{
 		Schema:           p.Schema,
-		pretty:           p.Pretty,
-		logSlowResponses: p.LogSlowResponses,
+		Pretty:           p.Pretty,
+		LogSlowResponses: p.LogSlowResponses,
 	}
 }
