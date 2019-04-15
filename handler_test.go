@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/graphql-go/graphql"
-	"github.com/graphql-go/graphql/testutil"
+	"github.com/bookreport/graphql"
+	"github.com/bookreport/graphql/testutil"
 	"github.com/graphql-go/handler"
 	"github.com/graphql-go/relay/examples/starwars" // TODO: remove this dependency
 	"golang.org/x/net/context"

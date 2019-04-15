@@ -1,18 +1,15 @@
 package handler
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
-	"github.com/graphql-go/graphql"
+	"github.com/bookreport/graphql"
 	"golang.org/x/net/context"
 )
 
@@ -23,11 +20,10 @@ const (
 )
 
 type Handler struct {
-	Schema *graphql.Schema
-
-	Pretty             bool
-	LogSlowResponses   bool
-	ShowFullStackTrace bool
+	Schema        *graphql.Schema
+	Pretty        bool
+	BeforeRequest RequestCallbackFn
+	AfterRequest  RequestCallbackFn
 }
 type RequestOptions struct {
 	Query         string                 `json:"query" url:"query" schema:"query"`
@@ -124,12 +120,17 @@ func NewRequestOptions(r *http.Request) *RequestOptions {
 func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	// get query
+	// get query and app location
 	opts := NewRequestOptions(r)
+	appLocation := r.Header.Get("X-App-Location")
 
 	// send the authorization header with the root object
 	root := make(map[string]interface{})
 	root["Authorization"] = r.Header.Get("Authorization")
+
+	authToken := r.Header.Get("Authorization")
+	requestID := time.Now().UnixNano()
+	h.BeforeRequest(0, appLocation, opts.Query, authToken, requestID)
 
 	// execute graphql query
 	params := graphql.Params{
@@ -144,35 +145,7 @@ func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *
 	result := graphql.Do(params)
 	if result.HasErrors() {
 		for _, err := range result.Errors {
-			if h.ShowFullStackTrace {
-				log.Println(err)
-				log.Println(string(err.Stack))
-			} else {
-				var stack bytes.Buffer
-				stack.WriteString("\n\n|---------------------------------------------------------------------------\n")
-				stack.WriteString("|  graphql error\n")
-				stack.WriteString("|---------------------------------------------------------------------------\n")
-				stack.WriteString("|\n|  ")
-				stack.WriteString(err.Error())
-				stack.WriteString("\n|  ...\n")
-				scanner := bufio.NewScanner(bytes.NewReader(err.Stack))
-				dir, _ := os.Getwd()
-				for scanner.Scan() {
-					line := scanner.Text()
-					if strings.Contains(line, "graphql-go") {
-						continue
-					}
-					if strings.Contains(line, "runtime") {
-						continue
-					}
-					stack.WriteString("|  ")
-					stack.WriteString(strings.Replace(line, dir, "", -1))
-					stack.WriteString("\n")
-				}
-				stack.WriteString("|  ...\n")
-				stack.WriteString("|---------------------------------------------------------------------------\n")
-				log.Println(stack.String())
-			}
+			log.Println(err.LocalizedStackTrace)
 		}
 	}
 
@@ -187,14 +160,7 @@ func (h *Handler) ContextHandler(ctx context.Context, w http.ResponseWriter, r *
 	}
 
 	elapsed := time.Since(start)
-	if h.LogSlowResponses && (elapsed/time.Millisecond) > 200 {
-		lines := strings.Split(params.RequestString, "\n")
-		log.Println("------------------ slow response -------------------")
-		log.Println("response time: ", elapsed)
-		for _, line := range lines {
-			log.Println(line)
-		}
-	}
+	h.AfterRequest(elapsed, appLocation, opts.Query, authToken, requestID)
 }
 
 // ServeHTTP provides an entrypoint into executing graphQL queries.
@@ -202,19 +168,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.ContextHandler(context.Background(), w, r)
 }
 
+type RequestCallbackFn func(time.Duration, string, string, string, int64)
+
 type Config struct {
-	Schema             *graphql.Schema
-	Pretty             bool
-	LogSlowResponses   bool
-	ShowFullStackTrace bool
+	Schema        *graphql.Schema
+	Pretty        bool
+	BeforeRequest RequestCallbackFn
+	AfterRequest  RequestCallbackFn
 }
 
 func NewConfig() *Config {
 	return &Config{
-		Schema:             nil,
-		Pretty:             true,
-		LogSlowResponses:   false,
-		ShowFullStackTrace: false,
+		Schema:        nil,
+		Pretty:        true,
+		BeforeRequest: func(elapsed time.Duration, url, query, token string, id int64) {},
+		AfterRequest:  func(elapsed time.Duration, url, query, token string, id int64) {},
 	}
 }
 
@@ -227,8 +195,9 @@ func New(p *Config) *Handler {
 	}
 
 	return &Handler{
-		Schema:           p.Schema,
-		Pretty:           p.Pretty,
-		LogSlowResponses: p.LogSlowResponses,
+		Schema:        p.Schema,
+		Pretty:        p.Pretty,
+		BeforeRequest: p.BeforeRequest,
+		AfterRequest:  p.AfterRequest,
 	}
 }
